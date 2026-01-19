@@ -1,96 +1,112 @@
+import re
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# ============================================================
+# USER EDIT SECTION (edit these lists only; no prompts used)
+# ============================================================
+# Columns must contain ALL of these keywords (case-insensitive).
+# Examples:
+#   ["ADC", "CHANNEL", "inl"]
+#   ["ADC", "inl"]                     # does NOT require CHANNEL
+#   ["ADC_CHANNEL", "inl"]             # if your naming uses combined tokens
+REQUIRED_KEYWORDS = ["ADC", "CHANNEL", "inl"]
+
+# Optional: columns containing ANY of these keywords will be excluded
+EXCLUDE_KEYWORDS = []  # e.g., ["TEMP", "DEBUG"]
+
+# Path to your CSV
 CSV_PATH = "output.csv"
 
+# Skip first 4 rows after the header row (your extra header lines)
+SKIP_EXTRA_HEADER_ROWS = [1, 2, 3, 4]
+
+# First N columns are "header-like" and should not be considered for filtering
+HEADER_LIKE_FIRST_N_COLS = 10
+# ============================================================
+
+
 # ---------------------------------------------------------------------
-# Read CSV:
-# - Row 0: column names
-# - Rows 1..4: extra header rows to skip
+# Load CSV
 # ---------------------------------------------------------------------
-df = pd.read_csv(CSV_PATH, header=0, skiprows=[1, 2, 3, 4])
+df = pd.read_csv(CSV_PATH, header=0, skiprows=SKIP_EXTRA_HEADER_ROWS)
 
 # Validate DIE_X / DIE_Y
 if ("DIE_X" not in df.columns) or ("DIE_Y" not in df.columns):
     raise ValueError("Expected columns 'DIE_X' and 'DIE_Y' were not found in the CSV.")
 
 # ---------------------------------------------------------------------
-# User inputs
+# Filter columns based on REQUIRED_KEYWORDS / EXCLUDE_KEYWORDS
 # ---------------------------------------------------------------------
-metric_key = input("Enter metric keyword (e.g., inl, bc): ").strip().upper()
-if not metric_key:
-    raise ValueError("Metric keyword cannot be empty.")
+first_n_cols = list(df.columns[:HEADER_LIKE_FIRST_N_COLS])
+search_space_cols = [c for c in df.columns if c not in first_n_cols]
 
-require_channel = input("Require 'CHANNEL' in column name? (y/n) [y]: ").strip().lower()
-require_channel = True if require_channel in ("", "y", "yes") else False
+req = [k.strip().upper() for k in REQUIRED_KEYWORDS if str(k).strip()]
+exc = [k.strip().upper() for k in EXCLUDE_KEYWORDS if str(k).strip()]
 
-extra_key = input(
-    "Optional extra filter keyword (press Enter to skip). "
-    "If provided, columns may match via this keyword even if 'CHANNEL' is absent: "
-).strip().upper()
-# extra_key can be empty -> ignored
+if not req:
+    raise ValueError("REQUIRED_KEYWORDS is empty. Put at least one keyword (e.g., 'ADC').")
 
-# ---------------------------------------------------------------------
-# Column filtering space:
-# first row is column names; first 10 columns are header-like and excluded from filtering
-# ---------------------------------------------------------------------
-first_10_cols = list(df.columns[:10])
-search_space_cols = [c for c in df.columns if c not in first_10_cols]
+def col_matches(colname: str) -> bool:
+    cu = str(colname).upper()
+    # Must contain all required keywords
+    for k in req:
+        if k not in cu:
+            return False
+    # Must contain none of the excluded keywords
+    for k in exc:
+        if k in cu:
+            return False
+    return True
 
-def norm(s: str) -> str:
-    return str(s).upper()
-
-filtered_cols = []
-for c in search_space_cols:
-    cu = norm(c)
-
-    # Always require ADC + metric
-    if ("ADC" not in cu) or (metric_key not in cu):
-        continue
-
-    # Two ways a column can qualify:
-    # (A) Primary rule: must have CHANNEL (if required) + (optional extra_key if user gave one)
-    # (B) Extra rule: if extra_key provided, allow matching that keyword even if CHANNEL is missing
-    if require_channel:
-        primary_ok = ("CHANNEL" in cu) and ((extra_key in cu) if extra_key else True)
-        extra_ok = bool(extra_key) and (extra_key in cu)  # may omit CHANNEL
-        if primary_ok or extra_ok:
-            filtered_cols.append(c)
-    else:
-        # If not requiring CHANNEL, then just ADC + metric + (optional extra_key)
-        if (extra_key in cu) if extra_key else True:
-            filtered_cols.append(c)
-
-# De-duplicate while preserving order
-seen = set()
-filtered_cols = [c for c in filtered_cols if not (c in seen or seen.add(c))]
+filtered_cols = [c for c in search_space_cols if col_matches(c)]
 
 if not filtered_cols:
     raise ValueError(
-        "No columns matched your filters.\n"
-        f"metric_key='{metric_key}', require_channel={require_channel}, extra_key='{extra_key or None}'"
+        "No columns matched your filter.\n"
+        f"REQUIRED_KEYWORDS={REQUIRED_KEYWORDS}, EXCLUDE_KEYWORDS={EXCLUDE_KEYWORDS}\n"
+        "Tip: relax the filter (remove 'CHANNEL' or adjust 'inl' token)."
     )
 
-print(f"Selected {len(filtered_cols)} columns.")
-print("First few selected columns:", filtered_cols[:10])
+# ---------------------------------------------------------------------
+# Sort columns: odd CHANNELs first, then even CHANNELs
+# CHANNEL<number> is detected anywhere inside the column name.
+# Non-channel columns go last.
+# ---------------------------------------------------------------------
+chan_re = re.compile(r"CHANNEL\s*(\d+)", re.IGNORECASE)
+
+def channel_sort_key(colname: str):
+    s = str(colname)
+    m = chan_re.search(s)
+    if not m:
+        return (2, 0, s.upper())  # non-channel last
+    ch = int(m.group(1))
+    parity_group = 0 if (ch % 2 == 1) else 1  # odd first
+    return (parity_group, ch, s.upper())
+
+filtered_cols_sorted = sorted(filtered_cols, key=channel_sort_key)
+
+print(f"Matched {len(filtered_cols_sorted)} columns.")
+print("First 12 columns (plot order):", filtered_cols_sorted[:12])
 
 # ---------------------------------------------------------------------
-# Plot: one line per row, ID by (DIE_X, DIE_Y)
+# Plot: one line per row, label by (DIE_X, DIE_Y)
 # ---------------------------------------------------------------------
-x_labels = filtered_cols
+x_labels = filtered_cols_sorted
 
 plt.figure(figsize=(max(10, 0.35 * len(x_labels)), 6))
 
 for _, row in df.iterrows():
     die_x = row["DIE_X"]
     die_y = row["DIE_Y"]
-    y = pd.to_numeric(row[filtered_cols], errors="coerce")
+    y = pd.to_numeric(row[filtered_cols_sorted], errors="coerce")
     plt.plot(x_labels, y.values, marker="o", linewidth=1, label=f"({die_x},{die_y})")
 
-plt.xlabel("Filtered Columns")
+plt.xlabel("Filtered Columns (odd CHANNELs first, then even)")
 plt.ylabel("Value")
 plt.xticks(rotation=60, ha="right")
 plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
 plt.legend(title="DIE_X, DIE_Y", fontsize=8, ncols=2)
 plt.tight_layout()
 plt.show()
+# plt.savefig("adc_filtered_plot.png", dpi=200, bbox_inches="tight")
