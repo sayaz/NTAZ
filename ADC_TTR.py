@@ -3,26 +3,30 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # ============================================================
-# USER EDIT SECTION (edit these lists only; no prompts used)
+# USER EDIT SECTION (no prompts, no arguments)
 # ============================================================
-# Columns must contain ALL of these keywords (case-insensitive).
-# Examples:
-#   ["ADC", "CHANNEL", "inl"]
-#   ["ADC", "inl"]                     # does NOT require CHANNEL
-#   ["ADC_CHANNEL", "inl"]             # if your naming uses combined tokens
-REQUIRED_KEYWORDS = ["ADC", "CHANNEL", "inl"]
 
-# Optional: columns containing ANY of these keywords will be excluded
+# OR between groups, AND inside each group.
+# Example meaning:
+#   (ADC AND CHANNEL AND inl) OR (ADC AND CHANNEL AND bc)
+FILTER_GROUPS = [
+    ["ADC", "CHANNEL", "inl"],
+    # ["ADC", "CHANNEL", "bc"],
+    # ["ADC", "AUX", "inl"],   # example: allow non-CHANNEL extra columns
+]
+
+# Columns containing ANY of these keywords will be excluded (global NOT)
 EXCLUDE_KEYWORDS = []  # e.g., ["TEMP", "DEBUG"]
 
-# Path to your CSV
-CSV_PATH = "output.csv"
+CSV_PATH = "/mnt/data/output.csv"
 
-# Skip first 4 rows after the header row (your extra header lines)
+# The CSV structure you described:
+# Row 0 = column names, next 4 rows are extra header rows
 SKIP_EXTRA_HEADER_ROWS = [1, 2, 3, 4]
 
-# First N columns are "header-like" and should not be considered for filtering
+# First N columns are "header-like" (metadata) and should not be considered for filtering
 HEADER_LIKE_FIRST_N_COLS = 10
+
 # ============================================================
 
 
@@ -31,47 +35,57 @@ HEADER_LIKE_FIRST_N_COLS = 10
 # ---------------------------------------------------------------------
 df = pd.read_csv(CSV_PATH, header=0, skiprows=SKIP_EXTRA_HEADER_ROWS)
 
-# Validate DIE_X / DIE_Y
+# Validate DIE_X / DIE_Y (used to label each row)
 if ("DIE_X" not in df.columns) or ("DIE_Y" not in df.columns):
     raise ValueError("Expected columns 'DIE_X' and 'DIE_Y' were not found in the CSV.")
 
 # ---------------------------------------------------------------------
-# Filter columns based on REQUIRED_KEYWORDS / EXCLUDE_KEYWORDS
+# Build filter logic: (OR of AND-groups) AND NOT(excludes)
 # ---------------------------------------------------------------------
-first_n_cols = list(df.columns[:HEADER_LIKE_FIRST_N_COLS])
-search_space_cols = [c for c in df.columns if c not in first_n_cols]
+filter_groups = [[str(k).strip().upper() for k in g if str(k).strip()] for g in FILTER_GROUPS]
+exclude_keys = [str(k).strip().upper() for k in EXCLUDE_KEYWORDS if str(k).strip()]
 
-req = [k.strip().upper() for k in REQUIRED_KEYWORDS if str(k).strip()]
-exc = [k.strip().upper() for k in EXCLUDE_KEYWORDS if str(k).strip()]
-
-if not req:
-    raise ValueError("REQUIRED_KEYWORDS is empty. Put at least one keyword (e.g., 'ADC').")
+# Sanity check
+if not filter_groups or all(len(g) == 0 for g in filter_groups):
+    raise ValueError(
+        "FILTER_GROUPS is empty. Put at least one group, e.g. [['ADC','CHANNEL','inl']]."
+    )
 
 def col_matches(colname: str) -> bool:
     cu = str(colname).upper()
-    # Must contain all required keywords
-    for k in req:
-        if k not in cu:
+
+    # Global exclusion: if any excluded keyword appears, reject
+    for ek in exclude_keys:
+        if ek in cu:
             return False
-    # Must contain none of the excluded keywords
-    for k in exc:
-        if k in cu:
-            return False
-    return True
+
+    # OR across groups
+    for group in filter_groups:
+        # AND inside group
+        if all(k in cu for k in group):
+            return True
+
+    return False
+
+# ---------------------------------------------------------------------
+# Filter columns (excluding first HEADER_LIKE_FIRST_N_COLS)
+# ---------------------------------------------------------------------
+first_n_cols = list(df.columns[:HEADER_LIKE_FIRST_N_COLS])
+search_space_cols = [c for c in df.columns if c not in first_n_cols]
 
 filtered_cols = [c for c in search_space_cols if col_matches(c)]
 
 if not filtered_cols:
     raise ValueError(
-        "No columns matched your filter.\n"
-        f"REQUIRED_KEYWORDS={REQUIRED_KEYWORDS}, EXCLUDE_KEYWORDS={EXCLUDE_KEYWORDS}\n"
-        "Tip: relax the filter (remove 'CHANNEL' or adjust 'inl' token)."
+        "No columns matched.\n"
+        f"FILTER_GROUPS={FILTER_GROUPS}\n"
+        f"EXCLUDE_KEYWORDS={EXCLUDE_KEYWORDS}\n"
+        "Tip: relax keywords or verify exact substrings in your column names."
     )
 
 # ---------------------------------------------------------------------
-# Sort columns: odd CHANNELs first, then even CHANNELs
-# CHANNEL<number> is detected anywhere inside the column name.
-# Non-channel columns go last.
+# Sort columns: odd channels first, then even channels
+# Columns without CHANNEL<number> go last
 # ---------------------------------------------------------------------
 chan_re = re.compile(r"CHANNEL\s*(\d+)", re.IGNORECASE)
 
@@ -87,10 +101,10 @@ def channel_sort_key(colname: str):
 filtered_cols_sorted = sorted(filtered_cols, key=channel_sort_key)
 
 print(f"Matched {len(filtered_cols_sorted)} columns.")
-print("First 12 columns (plot order):", filtered_cols_sorted[:12])
+print("First 12 columns in plot order:", filtered_cols_sorted[:12])
 
 # ---------------------------------------------------------------------
-# Plot: one line per row, label by (DIE_X, DIE_Y)
+# Plot: one line per row, labeled by (DIE_X, DIE_Y)
 # ---------------------------------------------------------------------
 x_labels = filtered_cols_sorted
 
