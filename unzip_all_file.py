@@ -1,85 +1,97 @@
-# ZIP EXTRACTION UTILITY
-# ----------------------
-# Description:
-# This script performs a recursive extraction of a ZIP file. If the main ZIP
-# contains nested ZIP files, the script will automatically detect and unzip 
-# them into their own sub-folders until no compressed files remain.
-
-# Key Features:
-# - Handles nested ZIP files (unzip-within-unzip).
-# - Cross-platform: Works on Windows and macOS.
-# - Mac-Safe: Automatically ignores '._' metadata files and '__MACOSX' folders.
-# - Clean-up: Deletes original ZIP files after extraction to save space.
-# """
+"""
+ZIP EXTRACTION & FILE SORTER
+----------------------------
+1. Recursively unzips all folders (handling nested zips).
+2. Cleans up macOS metadata (.__MACOSX and ._ files).
+3. Sorts .stdf and .txt files into dedicated master folders.
+4. Deletes empty source folders after sorting.
+"""
 
 import zipfile
 import os
 import shutil
 
 def extract_nested_zips(target_directory):
-    """
-    Recursively finds and extracts zip files within a directory, 
-    ignoring macOS metadata files and folders.
-    """
+    """Recursively finds and extracts all zip files."""
     while True:
         found_zip = False
         for root, dirs, files in os.walk(target_directory):
-            # 1. Skip the __MACOSX resource fork folders entirely
             if "__MACOSX" in root:
                 continue
-                
             for file in files:
-                # 2. Only process real .zip files
-                # We specifically skip files starting with '._' (Mac metadata)
                 if file.endswith(".zip") and not file.startswith("._"):
                     found_zip = True
                     zip_path = os.path.join(root, file)
-                    
-                    # Create a folder name based on the zip file name
                     folder_name = os.path.splitext(zip_path)[0]
-                    
-                    print(f"Unzipping nested file: {file}")
                     
                     try:
                         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                             zip_ref.extractall(folder_name)
-                        
-                        # Remove the zip file after successful extraction
                         os.remove(zip_path)
                     except zipfile.BadZipFile:
-                        print(f"Skipping invalid zip file: {file}")
-                        # Move on so we don't get stuck in an infinite loop
-                        continue 
-        
-        # If no more valid zips were found in this pass, we are finished
+                        pass 
         if not found_zip:
             break
 
-    # 3. Final Cleanup: Remove any empty __MACOSX folders left behind
-    for root, dirs, files in os.walk(target_directory, topdown=False):
+def sort_and_cleanup(search_directory, stdf_dest, summary_dest):
+    """Moves specific file types to destination folders and cleans up."""
+    
+    # Create the master destination folders if they don't exist
+    for path in [stdf_dest, summary_dest]:
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+    print("Sorting files into master folders...")
+    
+    for root, dirs, files in os.walk(search_directory):
+        # Prevent the script from moving files that are already in the destination
+        if root.startswith(stdf_dest) or root.startswith(summary_dest):
+            continue
+            
+        for file in files:
+            file_path = os.path.join(root, file)
+            
+            # Move STDF files
+            if file.lower().endswith(".stdf"):
+                shutil.move(file_path, os.path.join(stdf_dest, file))
+                print(f"Moved STDF: {file}")
+                
+            # Move Summary (txt) files
+            elif file.lower().endswith(".txt"):
+                shutil.move(file_path, os.path.join(summary_dest, file))
+                print(f"Moved Summary: {file}")
+
+    # Final Cleanup: Remove empty directories left behind
+    print("Cleaning up empty folders...")
+    for root, dirs, files in os.walk(search_directory, topdown=False):
         for name in dirs:
+            dir_path = os.path.join(root, name)
             if name == "__MACOSX":
-                shutil.rmtree(os.path.join(root, name))
+                shutil.rmtree(dir_path)
+            elif not os.listdir(dir_path): # If folder is empty
+                os.rmdir(dir_path)
 
-# --- Execution ---
-
+# ==========================================
+# CONFIGURATION
+# ==========================================
 main_zip = "/Users/nusrattazin/Desktop/Nusrat_Office_Code/8520051A.001.zip"
-destination = "/Users/nusrattazin/Desktop/Nusrat_Office_Code/Unzipped/"
+base_dir = "/Users/nusrattazin/Desktop/Nusrat_Office_Code/Unzipped/"
 
-# Ensure destination exists
-if not os.path.exists(destination):
-    os.makedirs(destination)
+# New folders for sorted results
+stdf_master = os.path.join(base_dir, "stdf_files")
+summary_master = os.path.join(base_dir, "summary_files")
 
-print("Starting main extraction...")
-try:
+if __name__ == "__main__":
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+
+    print("--- Starting Extraction ---")
     with zipfile.ZipFile(main_zip, 'r') as initial_ref:
-        initial_ref.extractall(destination)
+        initial_ref.extractall(base_dir)
 
-    # Run the recursive function
-    extract_nested_zips(destination)
-    print("\nSuccess: All nested layers have been extracted and cleaned!")
-
-except FileNotFoundError:
-    print(f"Error: Could not find the file at {main_zip}")
-except Exception as e:
-    print(f"An unexpected error occurred: {e}")
+    extract_nested_zips(base_dir)
+    
+    print("\n--- Starting Sorting ---")
+    sort_and_cleanup(base_dir, stdf_master, summary_master)
+    
+    print("\nProcess Complete! Your files are organized.")
