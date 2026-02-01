@@ -1,3 +1,17 @@
+# ZIP EXTRACTION UTILITY
+# ----------------------
+# Description:
+# This script performs a recursive extraction of a ZIP file. If the main ZIP
+# contains nested ZIP files, the script will automatically detect and unzip 
+# them into their own sub-folders until no compressed files remain.
+
+# Key Features:
+# - Handles nested ZIP files (unzip-within-unzip).
+# - Cross-platform: Works on Windows and macOS.
+# - Mac-Safe: Automatically ignores '._' metadata files and '__MACOSX' folders.
+# - Clean-up: Deletes original ZIP files after extraction to save space.
+# """
+
 import zipfile
 import os
 import shutil
