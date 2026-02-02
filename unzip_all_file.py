@@ -1,124 +1,112 @@
-"""
-DEEP RECURSIVE ARCHIVE EXTRACTOR (Support for .stdf and .summary)
----------------------------------------------------------------
-This version treats .stdf and .summary files as compressed folders.
-"""
-
 import zipfile
 import tarfile
 import os
 import shutil
 import time
 
-def extract_all_deep(target_dir):
+def extract_recursive(current_path):
     """
-    Dives into every folder. If it finds a zip, tar, stdf, or summary file, 
-    it extracts it as an archive.
+    Continually scans and extracts any zip or tar-like archives 
+    found at any depth within the current_path.
     """
-    files_found = os.listdir(target_dir)
-    
-    for file in files_found:
-        file_path = os.path.join(target_dir, file)
+    # Look at every file/folder in the current directory
+    for item in os.listdir(current_path):
+        item_path = os.path.join(current_path, item)
         
-        # Skip Mac metadata and already created destination folders
-        if file.startswith("._") or "__MACOSX" in file:
+        # Skip hidden Mac metadata and our final master folders
+        if item.startswith("._") or "__MACOSX" in item or "master" in item:
             continue
-            
-        is_archive = False
-        archive_type = None
 
-        # Define which extensions should be treated as archives
-        if file.lower().endswith(".zip"):
-            is_archive, archive_type = True, 'zip'
-        elif file.lower().endswith((".tar", ".tar.gz", ".tgz")):
-            is_archive, archive_type = True, 'tar'
-        # TREAT .STDF AND .SUMMARY AS ARCHIVES
-        elif file.lower().endswith((".stdf", ".summary")):
-            is_archive, archive_type = True, 'zip' # Assuming these are zip-based
+        # If it's a directory, dive into it (Recursion)
+        if os.path.isdir(item_path):
+            extract_recursive(item_path)
+            continue
 
-        if is_archive:
-            # Create a unique folder name to extract into
-            folder_name = os.path.join(target_dir, file.replace('.', '_') + "_extracted")
-            os.makedirs(folder_name, exist_ok=True)
+        # If it's a file, check if it's a known archive type
+        is_zip = item.lower().endswith((".zip", ".stdf", ".summary"))
+        is_tar = item.lower().endswith((".tar", ".tar.gz", ".tgz"))
+
+        if is_zip or is_tar:
+            # Create a unique extraction folder to avoid filename collisions
+            extract_to = os.path.join(current_path, f"{item}_extracted")
+            os.makedirs(extract_to, exist_ok=True)
             
-            print(f"Extracting Archive Folder: {file}")
+            print(f"Processing archive: {item}")
             try:
-                if archive_type == 'zip':
-                    # We use a try-except here in case a .stdf is actually a raw file 
-                    # and not a compressed folder
-                    try:
-                        with zipfile.ZipFile(file_path, 'r') as ref:
-                            ref.extractall(folder_name)
-                        time.sleep(0.2) 
-                        os.remove(file_path)
-                    except zipfile.BadZipFile:
-                        # If it's not a zip, just leave it alone
-                        print(f"File {file} looked like an archive but isn't. Skipping.")
-                        if not os.listdir(folder_name): os.rmdir(folder_name)
+                if is_zip:
+                    with zipfile.ZipFile(item_path, 'r') as z:
+                        z.extractall(extract_to)
+                elif is_tar:
+                    with tarfile.open(item_path, 'r') as t:
+                        t.extractall(extract_to, filter='data')
                 
-                elif archive_type == 'tar':
-                    with tarfile.open(file_path, 'r') as ref:
-                        ref.extractall(folder_name, filter='data')
-                    time.sleep(0.2)
-                    os.remove(file_path)
+                # Close file and wait for Windows to release the lock before deleting
+                time.sleep(0.1)
+                os.remove(item_path)
                 
-                # RECURSION: Dive into the newly created folder
-                if os.path.exists(folder_name):
-                    extract_all_deep(folder_name)
+                # IMPORTANT: Immediately dive into the newly extracted folder 
+                # in case it contains more archives
+                extract_recursive(extract_to)
                 
+            except (zipfile.BadZipFile, tarfile.ReadError):
+                # If it's not actually an archive (e.g., a raw .stdf file), 
+                # cleanup the empty folder we made and keep the file
+                if not os.listdir(extract_to):
+                    os.rmdir(extract_to)
             except Exception as e:
-                print(f"Could not process {file}: {e}")
+                print(f"Error on {item}: {e}")
 
-    # Process sub-directories that already existed
-    for item in os.listdir(target_dir):
-        item_path = os.path.join(target_dir, item)
-        if os.path.isdir(item_path) and item not in ["stdf", "summary"]:
-            extract_all_deep(item_path)
-
-def final_sort(search_dir, stdf_master, summary_master):
+def organize_files(source_dir, stdf_master, summary_master):
     """
-    Final pass: Find the ACTUAL data files (.stdf and .txt) 
-    and move them to the final folders.
+    Scans the fully unzipped tree and copies .stdf and .summary files 
+    into their respective master folders.
     """
-    print("\n--- Final Organizing Phase ---")
+    print("\n--- Phase 2: Organizing Master Folders ---")
     os.makedirs(stdf_master, exist_ok=True)
     os.makedirs(summary_master, exist_ok=True)
 
-    for root, dirs, files in os.walk(search_dir):
-        if "stdf_master" in root or "summary_master" in root:
+    for root, dirs, files in os.walk(source_dir):
+        # Don't search inside the master folders themselves
+        if "master" in root:
             continue
             
         for file in files:
-            source_path = os.path.join(root, file)
-            # Match the files inside the unzipped folders
+            file_path = os.path.join(root, file)
+            
             if file.lower().endswith(".stdf"):
-                shutil.move(source_path, os.path.join(stdf_master, file))
-            elif file.lower().endswith(".txt"):
-                shutil.move(source_path, os.path.join(summary_master, file))
+                print(f"Copying STDF: {file}")
+                shutil.copy2(file_path, os.path.join(stdf_master, file))
+            
+            elif file.lower().endswith(".summary"):
+                print(f"Copying Summary: {file}")
+                shutil.copy2(file_path, os.path.join(summary_master, file))
 
 # ==========================================
-# CONFIGURATION
+# SETTINGS
 # ==========================================
-main_input_file = r"C:\Users\YourName\Desktop\zipped.zip"
-working_dir = r"C:\Users\YourName\Desktop\Unzipped_Workspace"
+# r"" prefix is essential for Windows paths
+input_zip = r"C:\Users\YourName\Desktop\zipped.zip"
+output_workspace = r"C:\Users\YourName\Desktop\Work_Area"
 
-# These names must be different from the recursive folder search to avoid loops
-stdf_master = os.path.join(working_dir, "stdf_master_files")
-summary_master = os.path.join(working_dir, "summary_master_files")
+stdf_master_path = os.path.join(output_workspace, "stdf_master")
+summary_master_path = os.path.join(output_workspace, "summary_master")
 
 if __name__ == "__main__":
-    if not os.path.exists(working_dir):
-        os.makedirs(working_dir)
+    if not os.path.exists(output_workspace):
+        os.makedirs(output_workspace)
 
-    print("--- Starting Deep Extraction ---")
     try:
-        # Initial kick-off
-        with zipfile.ZipFile(main_input_file, 'r') as initial:
-            initial.extractall(working_dir)
+        # Initial extraction to start the process
+        print("Initial extraction started...")
+        with zipfile.ZipFile(input_zip, 'r') as start_ref:
+            start_ref.extractall(output_workspace)
 
-        extract_all_deep(working_dir)
-        final_sort(working_dir, stdf_master, summary_master)
+        # Start the recursive chain reaction
+        extract_recursive(output_workspace)
 
-        print("\nAll done! Check your master folders.")
+        # Move files to their final destination
+        organize_files(output_workspace, stdf_master_path, summary_master_path)
+
+        print("\nSUCCESS! All layers unzipped and files sorted.")
     except Exception as e:
-        print(f"Process failed: {e}")
+        print(f"Critical failure: {e}")
