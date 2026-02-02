@@ -1,9 +1,8 @@
 """
-UNIVERSAL ARCHIVE EXTRACTOR & SORTER
-------------------------------------
-- Supports: .zip, .tar, .tar.gz, .tgz
-- Features: Recursive extraction, Mac-metadata filtering, Windows-safe file locks.
-- Result: Organizes .stdf and .txt files into master folders.
+AGGRESSIVE RECURSIVE ARCHIVE EXTRACTOR
+--------------------------------------
+Purpose: Deep-dive into all nested .zip and .tar archives regardless of depth.
+Output: Organized 'stdf' and 'summary' folders.
 """
 
 import zipfile
@@ -12,120 +11,115 @@ import os
 import shutil
 import time
 
-def extract_nested_archives(target_directory):
-    """Recursively finds and extracts both ZIP and TAR archives."""
-    while True:
-        found_archive = False
-        for root, dirs, files in os.walk(target_directory):
-            # Skip hidden macOS metadata folders
-            if "__MACOSX" in root:
-                continue
-                
-            for file in files:
-                # Skip Mac 'ghost' files
-                if file.startswith("._"):
-                    continue
-                
-                zip_path = os.path.join(root, file)
-                # Create a destination folder name (removes .zip or .tar.gz)
-                # We use a nested split to handle double extensions like .tar.gz
-                folder_name = os.path.join(root, file.split('.')[0])
-                
-                # --- CASE 1: ZIP FILES ---
-                if file.lower().endswith(".zip"):
-                    found_archive = True
-                    print(f"Unzipping: {file}")
-                    try:
-                        with zipfile.ZipFile(zip_path, 'r') as ref:
-                            ref.extractall(folder_name)
-                        time.sleep(0.1) # Windows safety pause
-                        os.remove(zip_path)
-                    except Exception as e:
-                        print(f"Error extracting {file}: {e}")
-
-                # --- CASE 2: TAR FILES ---
-                elif file.lower().endswith((".tar", ".tar.gz", ".tgz")):
-                    found_archive = True
-                    print(f"Untarring: {file}")
-                    try:
-                        with tarfile.open(zip_path, 'r') as ref:
-                            # 'filter' is a security feature for modern Python
-                            ref.extractall(folder_name, filter='data')
-                        time.sleep(0.1) # Windows safety pause
-                        os.remove(zip_path)
-                    except Exception as e:
-                        print(f"Error extracting {file}: {e}")
+def extract_all_deep(target_dir):
+    """
+    Dives into every folder. If it finds a zip or tar, it extracts it
+    and then immediately checks the NEWLY extracted folder for more archives.
+    """
+    # 1. Look for any archives in the current target_dir
+    files_found = os.listdir(target_dir)
+    
+    for file in files_found:
+        file_path = os.path.join(target_dir, file)
         
-        # If no archives were processed in this pass, we are done
-        if not found_archive:
-            break
+        # Skip Mac metadata
+        if file.startswith("._") or "__MACOSX" in file:
+            continue
+            
+        is_archive = False
+        # Identify Archive Type
+        if file.lower().endswith(".zip"):
+            is_archive = True
+            archive_type = 'zip'
+        elif file.lower().endswith((".tar", ".tar.gz", ".tgz")):
+            is_archive = True
+            archive_type = 'tar'
 
-def sort_and_cleanup(search_directory, stdf_dest, summary_dest):
-    """Moves specific file types to master folders and removes empty folders."""
-    os.makedirs(stdf_dest, exist_ok=True)
-    os.makedirs(summary_dest, exist_ok=True)
+        if is_archive:
+            # Create a unique folder name for this archive
+            # This handles .tar.gz correctly by taking everything before the first dot
+            folder_name = os.path.join(target_dir, file.replace('.', '_') + "_extracted")
+            
+            if not os.path.exists(folder_name):
+                os.makedirs(folder_name)
+            
+            print(f"Extracting: {file_path}")
+            try:
+                if archive_type == 'zip':
+                    with zipfile.ZipFile(file_path, 'r') as ref:
+                        ref.extractall(folder_name)
+                else:
+                    with tarfile.open(file_path, 'r') as ref:
+                        ref.extractall(folder_name, filter='data')
+                
+                # Close the handle and wait for Windows to release the lock
+                time.sleep(0.2) 
+                os.remove(file_path)
+                
+                # RECURSION: Now dive into the folder we just created to see if IT has zips
+                extract_all_deep(folder_name)
+                
+            except Exception as e:
+                print(f"Failed to process {file}: {e}")
 
-    print("\nSorting files...")
-    for root, dirs, files in os.walk(search_directory):
-        # Don't move files that are already in the destination folders
-        if os.path.abspath(root).startswith(os.path.abspath(stdf_dest)) or \
-           os.path.abspath(root).startswith(os.path.abspath(summary_dest)):
+    # 2. After checking files, check sub-directories that already existed
+    for item in os.listdir(target_dir):
+        item_path = os.path.join(target_dir, item)
+        if os.path.isdir(item_path) and "stdf" not in item and "summary" not in item:
+            extract_all_deep(item_path)
+
+def final_sort(search_dir, stdf_master, summary_master):
+    """Moves all .stdf and .txt files found anywhere in search_dir to master folders."""
+    print("\n--- Starting Final Sort ---")
+    os.makedirs(stdf_master, exist_ok=True)
+    os.makedirs(summary_master, exist_ok=True)
+
+    for root, dirs, files in os.walk(search_dir):
+        # Avoid moving files that are already in the destination
+        if "stdf" in root or "summary" in root:
             continue
             
         for file in files:
-            file_path = os.path.join(root, file)
-            try:
-                if file.lower().endswith(".stdf"):
-                    shutil.move(file_path, os.path.join(stdf_dest, file))
-                elif file.lower().endswith(".txt"):
-                    shutil.move(file_path, os.path.join(summary_dest, file))
-            except Exception as e:
-                print(f"Could not move {file}: {e}")
-
-    # Final Cleanup
-    print("Cleaning up empty directories...")
-    for root, dirs, files in os.walk(search_directory, topdown=False):
-        for name in dirs:
-            dir_path = os.path.join(root, name)
-            try:
-                # Delete __MACOSX or any truly empty folder
-                if name == "__MACOSX" or not os.listdir(dir_path):
-                    shutil.rmtree(dir_path, ignore_errors=True)
-            except:
-                pass
+            source_path = os.path.join(root, file)
+            if file.lower().endswith(".stdf"):
+                # Move to stdf folder
+                shutil.move(source_path, os.path.join(stdf_master, file))
+                print(f"Moved to stdf: {file}")
+            elif file.lower().endswith(".txt"):
+                # Move to summary folder
+                shutil.move(source_path, os.path.join(summary_master, file))
+                print(f"Moved to summary: {file}")
 
 # ==========================================
-# CONFIGURATION (Edit paths here)
+# RUN SCRIPT
 # ==========================================
-# Use 'r' before the string to handle Windows backslashes correctly
-main_archive = r"C:\Users\YourName\Desktop\8520051A.001.zip"
-base_dir = r"C:\Users\YourName\Desktop\Unzipped"
+# Use 'r' for Windows paths
+main_input_file = r"C:\Users\YourName\Desktop\zipped.zip"
+working_dir = r"C:\Users\YourName\Desktop\Unzipped_Workspace"
 
-stdf_master = os.path.join(base_dir, "stdf_files")
-summary_master = os.path.join(base_dir, "summary_files")
+stdf_folder = os.path.join(working_dir, "stdf")
+summary_folder = os.path.join(working_dir, "summary")
 
 if __name__ == "__main__":
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
+    if not os.path.exists(working_dir):
+        os.makedirs(working_dir)
 
-    print("--- Process Started ---")
-    
-    # 1. Open the initial file (Check if it's zip or tar)
+    print("--- Phase 1: Initial Extraction ---")
     try:
-        if main_archive.lower().endswith(".zip"):
-            with zipfile.ZipFile(main_archive, 'r') as initial:
-                initial.extractall(base_dir)
+        # Initial kick-off
+        if main_input_file.lower().endswith(".zip"):
+            with zipfile.ZipFile(main_input_file, 'r') as initial:
+                initial.extractall(working_dir)
         else:
-            with tarfile.open(main_archive, 'r') as initial:
-                initial.extractall(base_dir, filter='data')
-        
-        # 2. Handle nested files
-        extract_nested_archives(base_dir)
-        
-        # 3. Sort the results
-        sort_and_cleanup(base_dir, stdf_master, summary_master)
-        
-        print("\nSUCCESS: All files extracted and sorted.")
-        
+            with tarfile.open(main_input_file, 'r') as initial:
+                initial.extractall(working_dir, filter='data')
+
+        print("--- Phase 2: Deep Recursive Extraction ---")
+        extract_all_deep(working_dir)
+
+        print("--- Phase 3: Sorting ---")
+        final_sort(working_dir, stdf_folder, summary_folder)
+
+        print("\nAll done! Check your 'stdf' and 'summary' folders.")
     except Exception as e:
-        print(f"Critical Error: {e}")
+        print(f"Process failed: {e}")
