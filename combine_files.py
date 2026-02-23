@@ -1,39 +1,56 @@
 import pandas as pd
+import os
 
 # List of files to process
-file_names = ['output_1hr.csv', 'output_2hr.csv', 'output_3hr.csv', 'output_4hr.csv']
+file_names = ['output_1hr.csv', 'output_2hr.csv']
+
+KEY_COL = 'DIEX_Y'   # <-- the ID you want to align on
+BASE_COLS = None     # we'll take "first 5 columns from first file" as your base
+
+def hour_suffix_from_filename(fname: str) -> str:
+    # output_1hr.csv -> _1hr
+    base = os.path.basename(fname)
+    return '_' + base.replace('.csv', '').split('_')[-1]
 
 def generate_summary():
-    # Load all files into DataFrames
-    # Since row 1 is the header, pandas will use it for column names automatically.
-    # Rows 2, 3, 4, 5 (metadata) will be treated as the first 4 rows of data.
+    # Read all files
     dfs = [pd.read_csv(f) for f in file_names]
-    
-    # 1. Extract the first 10 columns from the first file as the base
-    # (Parameter, SBIN, HBIN, DIE_X, DIE_Y, SITE, TIME, TOTAL_TESTS, LOT_ID, WAFER_ID)
-    base_info = dfs[0].iloc[:, :10]
-    
-    # 2. Identify the parameter columns (from index 10 onwards)
-    param_names = dfs[0].columns[10:]
-    
-    # 3. Build the list of columns for the final DataFrame
-    # Start with the base 10 columns
-    final_parts = [base_info]
-    
-    # 4. For each parameter, collect the data from all 4 files
-    for param in param_names:
-        for i, df in enumerate(dfs):
-            hour_suffix = f'_{i+1}hr'
-            # Select the specific column and rename it with the suffix
-            # We use [[param]] to keep it as a DataFrame for easy renaming
-            col_data = df[[param]].rename(columns={param: f"{param}{hour_suffix}"})
-            final_parts.append(col_data)
-            
-    # 5. Concatenate everything horizontally (axis=1)
-    # This aligns rows automatically (including the metadata rows 2-5)
-    summary_df = pd.concat(final_parts, axis=1)
-    
-    # 6. Save the final summary file
+
+    # --- sanity checks ---
+    for f, df in zip(file_names, dfs):
+        if KEY_COL not in df.columns:
+            raise ValueError(f"'{KEY_COL}' not found in {f}. Columns are: {list(df.columns)}")
+
+    # Base info = first 5 columns from the first file (as you currently do)
+    base_info = dfs[0].iloc[:, :5].copy()
+    base_cols = list(base_info.columns)
+
+    # Make sure KEY_COL is included in the base (required for merging)
+    if KEY_COL not in base_cols:
+        raise ValueError(
+            f"Your base_info (first 5 cols) does NOT include '{KEY_COL}'. "
+            f"Either move '{KEY_COL}' into the first 5 columns in the CSV, "
+            f"or explicitly include it in base_info."
+        )
+
+    # Start the merged df as the base info
+    summary_df = base_info
+
+    # Parameter columns are everything after the first 5 columns in each file
+    # (same logic you used, but applied per file)
+    for f, df in zip(file_names, dfs):
+        suffix = hour_suffix_from_filename(f)
+
+        param_cols = list(df.columns[5:])  # columns after first 5
+        # Build a temp df: KEY + renamed params
+        temp = df[[KEY_COL] + param_cols].copy()
+        temp = temp.rename(columns={c: f"{c}{suffix}" for c in param_cols})
+
+        # Merge by KEY_COL so rows align by DIEX_Y, not by row number
+        summary_df = summary_df.merge(temp, on=KEY_COL, how='left', validate='one_to_one')
+
+    # Optional: detect keys missing in some files (helpful debugging)
+    # If a die exists in base but not in another file, you'll see NaNs in that hour's columns.
     summary_df.to_csv('summary_hour.csv', index=False)
     print("Successfully created 'summary_hour.csv'")
 
