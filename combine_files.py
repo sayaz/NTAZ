@@ -1,11 +1,11 @@
 import pandas as pd
 import os
 
-file_names = ['output_1hr.csv', 'output_2hr.csv']
+file_names = ['500_hours.csv', '168_hours.csv']
 KEY_COL = 'DIEX_Y'
 
 def hour_suffix_from_filename(fname):
-    return '_' + os.path.basename(fname).replace('.csv', '').split('_')[-1]
+    return '_' + os.path.splitext(os.path.basename(fname))[0]
 
 def generate_summary():
 
